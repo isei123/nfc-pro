@@ -5,50 +5,99 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Web NFC 測試</title>
 <style>
-  body{font-family:sans-serif;background:#0f1b2d;color:#e6f1f5;padding:16px}
-  button{background:#14b8a6;color:#fff;border:0;padding:12px 16px;margin:4px 0;border-radius:6px;width:100%;font-size:16px}
-  input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box}
-  pre{background:#13263f;padding:12px;white-space:pre-wrap;min-height:120px}
+  body{font-family:sans-serif;background:#0f1b2d;color:#e6f1f5;padding:16px;margin:0}
+  .tabs{display:flex;gap:8px;margin-bottom:12px}
+  .tabs button{flex:1;padding:12px;border:1px solid #14b8a6;background:transparent;color:#14b8a6;border-radius:6px;font-size:16px}
+  .tabs button.on{background:#14b8a6;color:#fff}
+  #status{padding:10px;border-radius:6px;background:#13263f;margin-bottom:12px;font-weight:bold}
+  input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;font-size:16px}
+  #writeBox{display:none}
+  pre{background:#13263f;padding:12px;white-space:pre-wrap;min-height:160px}
 </style>
 </head>
 <body>
 <h2>Web NFC 測試</h2>
-<button id="scan">1. 開始讀取</button>
-<input id="txt" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1">
-<button id="write">2. 寫入標籤</button>
-<pre id="log">等待操作...</pre>
+
+<div class="tabs">
+  <button id="btnRead">讀取模式</button>
+  <button id="btnWrite">寫入模式</button>
+  <button id="btnStop">停止</button>
+</div>
+
+<div id="status">狀態：閒置</div>
+
+<div id="writeBox">
+  <input id="txt" placeholder="輸入要寫入的文字或網址（https://...）">
+  <button id="doWrite" style="width:100%;padding:12px;background:#14b8a6;color:#fff;border:0;border-radius:6px;font-size:16px">開始寫入（再靠近標籤）</button>
+</div>
+
+<pre id="log"></pre>
+
 <script>
-const log = m => document.getElementById('log').textContent = m + '\n' + document.getElementById('log').textContent;
+const $ = id => document.getElementById(id);
+const log = m => $('log').textContent = `[${new Date().toLocaleTimeString()}] ${m}\n` + $('log').textContent;
+let ctrl = null;   // 目前模式的 AbortController
 
-if (!('NDEFReader' in window)) log('此瀏覽器不支援 Web NFC');
+function setMode(mode) {
+  ['btnRead','btnWrite'].forEach(b => $(b).classList.remove('on'));
+  $('writeBox').style.display = mode === 'write' ? 'block' : 'none';
+  if (mode === 'read')  $('btnRead').classList.add('on');
+  if (mode === 'write') $('btnWrite').classList.add('on');
+  $('status').textContent = '狀態：' + ({read:'讀取中，請靠近標籤', write:'寫入模式', idle:'閒置'}[mode]);
+}
 
-document.getElementById('scan').onclick = async () => {
+function stopAll() {
+  if (ctrl) { ctrl.abort(); ctrl = null; }
+  setMode('idle');
+}
+
+if (!('NDEFReader' in window)) log('此瀏覽器不支援 Web NFC（需 Android Chrome + HTTPS）');
+
+// 讀取模式
+$('btnRead').onclick = async () => {
+  stopAll();
+  ctrl = new AbortController();
   try {
     const ndef = new NDEFReader();
-    await ndef.scan();
-    log('請將標籤靠近手機背面...');
+    await ndef.scan({ signal: ctrl.signal });
+    setMode('read');
     ndef.onreadingerror = () => log('讀取失敗，可能不是 NDEF 標籤');
     ndef.onreading = ({ message, serialNumber }) => {
-      log('序號：' + serialNumber);
+      log('序號：' + serialNumber + '｜紀錄數：' + message.records.length);
       for (const r of message.records) {
         const data = r.data ? new TextDecoder(r.encoding || 'utf-8').decode(r.data) : '(空)';
-        log(`類型：${r.recordType}｜內容：${data}`);
+        log(`  類型：${r.recordType}｜內容：${data}`);
       }
     };
-  } catch (e) { log('錯誤：' + e.name + ' ' + e.message); }
+  } catch (e) { log('讀取錯誤：' + e.name + ' ' + e.message); setMode('idle'); }
 };
 
-document.getElementById('write').onclick = async () => {
-  const v = document.getElementById('txt').value.trim();
+// 切到寫入模式（只顯示輸入框，還不寫）
+$('btnWrite').onclick = () => { stopAll(); setMode('write'); };
+
+// 真正執行寫入
+$('doWrite').onclick = async () => {
+  const v = $('txt').value.trim();
   if (!v) return log('請先輸入內容');
+  if (ctrl) ctrl.abort();
+  ctrl = new AbortController();
+  $('status').textContent = '狀態：等待標籤以寫入...';
   try {
     const ndef = new NDEFReader();
-    log('請將標籤靠近手機以寫入...');
     const isUrl = /^https?:\/\//.test(v);
-    await ndef.write({ records: [{ recordType: isUrl ? 'url' : 'text', data: v }] });
-    log('寫入成功：' + v);
-  } catch (e) { log('錯誤：' + e.name + ' ' + e.message); }
+    await ndef.write(
+      { records: [{ recordType: isUrl ? 'url' : 'text', data: v }] },
+      { signal: ctrl.signal }
+    );
+    log(`寫入成功（${isUrl ? 'url' : 'text'}）：${v}`);
+    $('status').textContent = '狀態：寫入完成，可再寫下一張或切回讀取';
+  } catch (e) {
+    log('寫入錯誤：' + e.name + ' ' + e.message);
+    $('status').textContent = '狀態：寫入模式';
+  } finally { ctrl = null; }
 };
+
+$('btnStop').onclick = () => { stopAll(); log('已停止'); };
 </script>
 </body>
 </html>
